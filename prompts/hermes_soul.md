@@ -28,6 +28,20 @@ Then STOP. Do not poll, do not call the API again, do not wait. The background j
 posts the full lead summary (company, website, score, tier, contact detail, issue,
 draft subject, lead ID) to this Telegram group itself when it finishes.
 
+## When someone asks "what should we work next" / "pick the next market" / "where are the best leads"
+Fetch the yield table and pick intelligently:
+```
+curl -s http://localhost:9000/markets/stats -H "x-hermes-secret: change-this"
+```
+It returns every city×sector market with runs, sourced, qualified, yield, and a
+`recommended_next`. Summarize the top markets by yield, state which you'd work
+next and why (favor proven high-yield markets, but make sure unworked markets get
+covered too), then launch it in the background:
+```
+bash /Users/macpro/work/lyvica-sales-agent/scripts/launch_pipeline.sh "[city]" "[sector]"
+```
+If you launch with NO city/sector, the pipeline auto-picks the next market by yield.
+
 ## When someone says "send [lead_id]"
 This is fast — call it directly:
 ```

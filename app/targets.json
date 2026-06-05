@@ -1,0 +1,25 @@
+{
+  "_comment": "The market universe the daily pipeline rotates through. Edit freely. For deeper coverage of a large metro, add its neighborhoods/suburbs as separate city entries (e.g. 'Brooklyn', 'Queens').",
+  "cities": [
+    "San Francisco",
+    "Oakland",
+    "San Jose",
+    "Sacramento",
+    "Fresno",
+    "Bakersfield",
+    "Los Angeles",
+    "San Diego"
+  ],
+  "sectors": [
+    "dentist",
+    "electrician",
+    "plumber",
+    "roofer",
+    "landscaper",
+    "hvac contractor",
+    "auto repair shop",
+    "hair salon",
+    "chiropractor",
+    "law firm"
+  ]
+}

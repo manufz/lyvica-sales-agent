@@ -25,11 +25,13 @@ def call_pipeline(city: str, industry: str, limit: int) -> dict:
     import urllib.request
     import urllib.error
 
-    payload = json.dumps({
-        "city": city,
-        "industry": industry,
-        "limit": limit,
-    }).encode()
+    body: dict = {"limit": limit}
+    # When city/industry are omitted, the API's selector picks the next market.
+    if city:
+        body["city"] = city
+    if industry:
+        body["industry"] = industry
+    payload = json.dumps(body).encode()
 
     req = urllib.request.Request(
         f"{settings.APP_BASE_URL}/leads/pipeline",
@@ -131,8 +133,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run the Lyvica lead pipeline and post to Telegram.")
-    parser.add_argument("--city", default=settings.PIPELINE_DEFAULT_CITY)
-    parser.add_argument("--industry", default=settings.PIPELINE_DEFAULT_INDUSTRY)
+    # No defaults: when city/industry are omitted, the API selector picks the
+    # next market by yield (rotation across the whole configured market).
+    parser.add_argument("--city", default=None)
+    parser.add_argument("--industry", default=None)
     parser.add_argument("--limit", type=int, default=settings.PIPELINE_DEFAULT_LIMIT)
     args = parser.parse_args()
 
@@ -140,7 +144,8 @@ if __name__ == "__main__":
     industry = args.industry
     limit = args.limit
 
-    print(f"Running pipeline: {limit} {industry} in {city}...")
+    target = f"{industry} in {city}" if (city and industry) else "auto-selected market (by yield)"
+    print(f"Running pipeline: {limit} leads — {target}...")
     try:
         data = call_pipeline(city, industry, limit)
     except Exception as exc:

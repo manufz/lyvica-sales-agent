@@ -13,6 +13,7 @@ from app.db import get_db
 from app.email_sender import send_email
 from app.followups import get_due_leads, send_due_followups
 from app.models import Lead, Message
+from app.markets import get_coverage_stats, record_run, select_next_market
 from app.sourcer import source_leads
 from app.outreach_templates import (
     derive_desired_action,
@@ -347,14 +348,26 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
     """
     from urllib.parse import urlparse
 
-    city = req.city or settings.PIPELINE_DEFAULT_CITY
-    industry = req.industry or settings.PIPELINE_DEFAULT_INDUSTRY
+    # If no market is specified, the yield-aware selector picks the next one
+    # (rotation across the whole configured market over time).
+    if req.city and req.industry:
+        city, industry = req.city, req.industry
+    else:
+        city, industry = select_next_market(db)
     country = req.country
     limit = req.limit or settings.PIPELINE_DEFAULT_LIMIT
     min_score = req.min_score if req.min_score is not None else settings.PIPELINE_MIN_SCORE
 
-    # 1. Source leads from Google Places
-    sourced = source_leads(city=city, industry=industry, country=country, limit=limit)
+    # Dedup: skip businesses we've already sourced so each run finds FRESH leads
+    # and coverage advances. (Paginates deeper when the top results are known.)
+    known_domains = {d for (d,) in db.query(Lead.domain).filter(Lead.domain.isnot(None)).all()}
+
+    # 1. Source fresh leads from Google Places (paginated, deduped)
+    src = source_leads(
+        city=city, industry=industry, country=country,
+        limit=limit, exclude_domains=known_domains,
+    )
+    sourced = src["leads"]
     total_sourced = len(sourced)
 
     qualifying_leads: list[Lead] = []
@@ -466,6 +479,13 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         total_researched += 1
         qualifying_leads.append(lead)
 
+    # Record coverage so the selector can rotate by yield next time.
+    record_run(
+        db, city=city, sector=industry,
+        sourced=total_sourced, qualified=len(qualifying_leads),
+        exhausted=src["exhausted"],
+    )
+
     return PipelineResult(
         city=city,
         industry=industry,
@@ -476,3 +496,10 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         skipped_low_score=skipped_low_score,
         leads=qualifying_leads,
     )
+
+
+@app.get("/markets/stats", dependencies=[HermesAuth])
+def markets_stats(db: Session = Depends(get_db)):
+    """Yield table across the whole market universe + the recommended next market.
+    Hermes uses this to pick markets intelligently."""
+    return get_coverage_stats(db)

@@ -82,3 +82,20 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     lead: Mapped[Lead] = relationship("Lead", back_populates="messages")
+
+
+class MarketCoverage(Base):
+    """Tracks how thoroughly each (city, sector) market has been worked,
+    so the selector can rotate intelligently and by yield."""
+    __tablename__ = "market_coverage"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    city: Mapped[str] = mapped_column(Text, nullable=False)
+    sector: Mapped[str] = mapped_column(Text, nullable=False)
+    total_sourced: Mapped[int] = mapped_column(default=0)
+    total_qualified: Mapped[int] = mapped_column(default=0)
+    runs: Mapped[int] = mapped_column(default=0)
+    exhausted: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
