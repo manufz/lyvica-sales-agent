@@ -71,6 +71,8 @@ class LeadOut(BaseModel):
     tier: Optional[str]
     confidence: Optional[float]
     pitch_angles: Optional[list]
+    buying_signals: Optional[list]
+    diy_builder: Optional[str]
     primary_issue: Optional[str]
     desired_action: Optional[str]
     recommended_channel: Optional[str]

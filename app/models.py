@@ -41,6 +41,8 @@ class Lead(Base):
     confidence: Mapped[Optional[float]] = mapped_column(Numeric)
     subscores: Mapped[Optional[dict]] = mapped_column(JSON)
     pitch_angles: Mapped[Optional[list]] = mapped_column(JSON)
+    buying_signals: Mapped[Optional[list]] = mapped_column(JSON)
+    diy_builder: Mapped[Optional[str]] = mapped_column(Text)
     scoring_payload: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Outreach

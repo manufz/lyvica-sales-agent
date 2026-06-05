@@ -125,6 +125,8 @@ def research_lead(req: ResearchRequest, db: Session = Depends(get_db)):
     lead.confidence = scoring.get("confidence")
     lead.subscores = scoring.get("subscores")
     lead.pitch_angles = pitch_angles
+    lead.buying_signals = scoring.get("buying_signals") or []
+    lead.diy_builder = scoring.get("diy_builder")
     lead.scoring_payload = scoring.get("scoring_payload")
     lead.primary_issue = primary_issue
     lead.desired_action = desired_action
@@ -392,10 +394,13 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
 
         # Confidence gate: skip leads we couldn't score reliably (guesses).
         score = scoring.get("score")
+        buying_signals = scoring.get("buying_signals") or []
         if not scoring.get("scoreable", True):
             skipped_low_score += 1
             continue
-        if score is not None and score < min_score:
+        # A buying signal (e.g. DIY builder) qualifies a lead even if the site's
+        # quality score is below threshold — that's the whole point of the signal.
+        if score is not None and score < min_score and not buying_signals:
             skipped_low_score += 1
             continue
 
@@ -437,6 +442,8 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         lead.confidence = scoring.get("confidence")
         lead.subscores = scoring.get("subscores")
         lead.pitch_angles = pitch_angles
+        lead.buying_signals = buying_signals
+        lead.diy_builder = scoring.get("diy_builder")
         lead.scoring_payload = scoring.get("scoring_payload")
         lead.primary_issue = primary_issue
         lead.desired_action = desired_action

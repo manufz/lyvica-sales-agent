@@ -21,6 +21,8 @@ _FALLBACK = {
     "subscores": {},
     "pitch_angles": [],
     "visible_problems": [],
+    "buying_signals": [],
+    "diy_builder": None,
     "scoring_payload": {},
 }
 

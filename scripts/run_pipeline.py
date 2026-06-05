@@ -81,17 +81,23 @@ def format_summary(data: dict) -> str:
         website = lead.get("website_url") or "—"
         name = lead.get("company_name") or "—"
 
-        lines += [
+        block = [
             f"",
             f"{'─'*28}",
             f"{i}. {name}",
             f"🌐 {website}",
             f"📊 Score: {score_str} | Tier: {tier}",
             contact_line,
+        ]
+        # Buying signals (e.g. DIY builder) — prominent, they predict conversion
+        for sig in (lead.get("buying_signals") or []):
+            block.append(f"🎯 {sig}")
+        block += [
             f"⚠️  {issue}",
             f"✉️  {subject}",
             f"🆔 {lead['id']}",
         ]
+        lines += block
 
     lines += [
         f"",

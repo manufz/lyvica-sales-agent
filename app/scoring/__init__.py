@@ -89,6 +89,13 @@ def score_domain(
 
     result = compute_score(evidence, vision.get("datedness"))
 
+    # Buying-propensity signals (distinct from website-quality score).
+    # DIY builder = owner built it themselves → low attachment, easier sell.
+    buying_signals: list[str] = []
+    diy = evidence.get("diy_builder")
+    if diy:
+        buying_signals.append(f"DIY builder ({diy}) — owner-built, likely an easy sell")
+
     # Pitch angles: prefer the vision-generated tailored pitch; fall back to deterministic
     pitch_angles: list[str] = []
     if vision.get("pitch"):
@@ -105,6 +112,8 @@ def score_domain(
         "subscores": result["subscores"],
         "pitch_angles": pitch_angles,
         "visible_problems": vision.get("visible_problems") or [],
+        "buying_signals": buying_signals,
+        "diy_builder": diy,
         "scoring_payload": {
             "evidence": evidence,
             "vision": vision,

@@ -108,6 +108,39 @@ def parse_html_signals(html: str) -> dict:
     return out
 
 
+# DIY website builders — owner-built, low attachment, high-propensity "easy sell".
+# (label, [html/header substrings to match, lowercased])
+_DIY_BUILDERS: list[tuple[str, list[str]]] = [
+    ("Wix",         ["wixstatic.com", "wix.com", "_wixcss", "x-wix-"]),
+    ("Squarespace", ["squarespace.com", "squarespace-cdn", "static1.squarespace"]),
+    ("GoDaddy",     ["godaddy", "secureserver.net", "websitebuilder", "mysite-cdn", "img1.wsimg.com"]),
+    ("Weebly",      ["weebly.com", "editmysite.com", "weeblycloud"]),
+    ("Jimdo",       ["jimdo.com", "jimdofree", "jimstatic.com"]),
+    ("Strikingly",  ["strikingly.com", "strikinglycdn"]),
+    ("Site123",     ["site123", "isu.pub"]),
+    ("Google Sites",["sites.google.com", "gstatic.com/sites"]),
+    ("Webnode",     ["webnode.com", "wnode"]),
+]
+
+
+def detect_diy_builder(html: str, headers: dict, cms: Optional[str]) -> Optional[str]:
+    """
+    Return the DIY builder name if the site is built on a consumer website
+    builder, else None. These are strong 'easy sell' buying signals: the owner
+    DIY'd the site (low attachment) but already values having a web presence.
+    """
+    corpus = (html or "").lower()
+    header_blob = " ".join(f"{k}:{v}" for k, v in (headers or {}).items()).lower()
+    cms_l = (cms or "").lower()
+    for label, needles in _DIY_BUILDERS:
+        if label.lower() in cms_l:
+            return label
+        for n in needles:
+            if n in corpus or n in header_blob:
+                return label
+    return None
+
+
 def detect_tech(html: str, headers: dict) -> dict:
     """Free HTML/header tech detection. Returns {technologies, cms, cms_version}."""
     techs: list[str] = []
@@ -214,6 +247,7 @@ def collect_signals(domain: str, website_url: str) -> dict:
 
     html_signals = parse_html_signals(html)
     tech = detect_tech(html, headers)
+    diy_builder = detect_diy_builder(html, headers, tech["cms"])
     psi = fetch_pagespeed(website_url)
     ssl_info = check_ssl(domain)
     wayback = fetch_wayback(domain)
@@ -227,6 +261,7 @@ def collect_signals(domain: str, website_url: str) -> dict:
         "technologies": tech["technologies"],
         "cms": tech["cms"],
         "cms_version": tech["cms_version"],
+        "diy_builder": diy_builder,
         "pagespeed_mobile": psi["mobile_score"],
         "has_viewport": psi["has_viewport"],
         "https": ssl_info["https"],
