@@ -49,7 +49,7 @@ def format_summary(data: dict) -> str:
     city = data["city"]
     industry = data["industry"].title()
     lines = [
-        f"🎯 Lyvica Pipeline — {industry}s in {city}",
+        f"🎯 Lyvica Pipeline — {industry} in {city}",
         f"📅 {now}",
         f"",
         f"📊 {data['total_sourced']} sourced → {data['qualifying']} qualifying"
