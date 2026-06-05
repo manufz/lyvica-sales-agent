@@ -17,10 +17,20 @@ _CONTACT_KEYWORDS = {
     "termin", "quote", "datenschutz", "about-us",
 }
 
-_IGNORED_EMAIL_PATTERNS = re.compile(
-    r"@(?:sentry\.|example\.|wix\.|wordpress\.|schema\.|googletagmanager\.|googleapis\.)",
-    re.IGNORECASE,
+# Monitoring / asset / CDN / placeholder domains that produce non-contact emails.
+# Matched as substrings anywhere in the domain (so "sentry-next.wixpress.com" hits).
+_JUNK_DOMAIN_TOKENS = (
+    "sentry", "wixpress", "wix.com", "example.", "example.com", "domain.com",
+    "yourdomain", "yoursite", "schema.", "w3.org", "googletagmanager",
+    "googleapis", "gstatic", "cloudflare", "jsdelivr", "cdn.", "cloudfront",
+    "wordpress.", "squarespace.com", "sentry.io", "ingest.", "astro.",
 )
+# Placeholder local-parts that are never a real business inbox.
+_JUNK_LOCALPARTS = {
+    "email", "name", "user", "you", "your", "test", "username",
+    "firstname", "lastname", "yourname", "example",
+}
+_HEX_RE = re.compile(r"^[0-9a-f]{16,}$")
 
 _MAX_CANDIDATE_PAGES = 6
 
@@ -31,12 +41,28 @@ def _is_business_email(email: str) -> bool:
     return domain not in free_domains
 
 
+def _is_junk_email(email: str) -> bool:
+    """True if the address is a monitoring/asset/placeholder address, not a real contact."""
+    try:
+        local, domain = email.lower().split("@", 1)
+    except ValueError:
+        return True
+    if any(tok in domain for tok in _JUNK_DOMAIN_TOKENS):
+        return True
+    if len(local) <= 1:                      # "_@...", "a@..."
+        return True
+    if _HEX_RE.match(local):                 # 32-char tracking ids (Sentry etc.)
+        return True
+    if local in _JUNK_LOCALPARTS:            # user@, name@, you@ placeholders
+        return True
+    if not re.search(r"[a-z]", local):       # no letters at all → junk
+        return True
+    return False
+
+
 def _extract_emails(text: str) -> list[str]:
     found = _EMAIL_RE.findall(text)
-    return [
-        e.lower() for e in found
-        if not _IGNORED_EMAIL_PATTERNS.search(e)
-    ]
+    return [e.lower() for e in found if not _is_junk_email(e)]
 
 
 def _extract_instagram(soup: BeautifulSoup, text: str) -> str | None:

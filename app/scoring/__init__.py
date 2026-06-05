@@ -18,7 +18,7 @@ import logging
 from typing import Optional
 
 from app.scoring.compute import compute_score
-from app.scoring.signals import collect_signals
+from app.scoring.signals import collect_signals, detect_diy_builder
 from app.scoring.vision import run_vision
 
 log = logging.getLogger(__name__)
@@ -91,8 +91,14 @@ def score_domain(
 
     # Buying-propensity signals (distinct from website-quality score).
     # DIY builder = owner built it themselves → low attachment, easier sell.
-    buying_signals: list[str] = []
+    # Fall back to the JS-rendered DOM (from the screenshot step) to catch
+    # builders like Wix/Squarespace that the raw HTTP fetch doesn't expose.
     diy = evidence.get("diy_builder")
+    if not diy:
+        rendered = vision.get("rendered_html") or ""
+        if rendered:
+            diy = detect_diy_builder(rendered, {}, None)
+    buying_signals: list[str] = []
     if diy:
         buying_signals.append(f"DIY builder ({diy}) — owner-built, likely an easy sell")
 

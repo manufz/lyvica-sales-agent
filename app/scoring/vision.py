@@ -47,21 +47,26 @@ def _slug(url: str) -> str:
     return _SLUG_RE.sub("_", s)[:80]
 
 
-def capture_screenshot(url: str) -> Optional[str]:
-    """Capture a screenshot with Playwright. Returns path or None."""
+def capture_screenshot(url: str) -> tuple[Optional[str], str]:
+    """
+    Capture a screenshot with Playwright. Returns (path, rendered_html).
+    rendered_html is the post-JS DOM — used to detect JS-rendered builders
+    (Wix/Squarespace) that the raw HTTP fetch misses. Empty string on failure.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         log.warning("playwright not installed — screenshot skipped")
-        return None
+        return None, ""
 
     try:
         os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
     except OSError as exc:
         log.warning("cannot create screenshot dir: %s", exc)
-        return None
+        return None, ""
 
     path = os.path.join(_SCREENSHOT_DIR, f"{_slug(url)}_{int(time.time())}.png")
+    rendered_html = ""
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
@@ -75,11 +80,15 @@ def capture_screenshot(url: str) -> Optional[str]:
             except Exception:
                 page.goto(url, wait_until="domcontentloaded", timeout=20_000)
             page.screenshot(path=path, full_page=False)
+            try:
+                rendered_html = page.content() or ""
+            except Exception:
+                rendered_html = ""
             browser.close()
-        return path
+        return path, rendered_html
     except Exception as exc:
         log.warning("screenshot failed for %s: %s", url, exc)
-        return None
+        return None, rendered_html
 
 
 def _evidence_summary(evidence: dict) -> str:
@@ -165,9 +174,15 @@ def judge_visual(screenshot_path: str, evidence: dict) -> dict:
 
 
 def run_vision(website_url: str, evidence: dict) -> dict:
-    """Screenshot + judge. Returns {datedness, visible_problems, pitch, error}."""
-    path = capture_screenshot(website_url)
+    """
+    Screenshot + judge. Returns {datedness, visible_problems, pitch, error,
+    rendered_html}. rendered_html lets the caller re-check for JS-rendered
+    DIY builders the static fetch missed.
+    """
+    path, rendered_html = capture_screenshot(website_url)
     if not path:
         return {"datedness": None, "visible_problems": [], "pitch": None,
-                "error": "screenshot unavailable"}
-    return judge_visual(path, evidence)
+                "error": "screenshot unavailable", "rendered_html": rendered_html}
+    result = judge_visual(path, evidence)
+    result["rendered_html"] = rendered_html
+    return result
