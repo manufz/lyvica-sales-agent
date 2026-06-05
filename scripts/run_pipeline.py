@@ -122,11 +122,19 @@ def send_telegram(message: str) -> bool:
 
 
 if __name__ == "__main__":
-    city = settings.PIPELINE_DEFAULT_CITY
-    industry = settings.PIPELINE_DEFAULT_INDUSTRY
-    limit = settings.PIPELINE_DEFAULT_LIMIT
+    import argparse
 
-    print(f"Running pipeline: {limit} {industry}s in {city}...")
+    parser = argparse.ArgumentParser(description="Run the Lyvica lead pipeline and post to Telegram.")
+    parser.add_argument("--city", default=settings.PIPELINE_DEFAULT_CITY)
+    parser.add_argument("--industry", default=settings.PIPELINE_DEFAULT_INDUSTRY)
+    parser.add_argument("--limit", type=int, default=settings.PIPELINE_DEFAULT_LIMIT)
+    args = parser.parse_args()
+
+    city = args.city
+    industry = args.industry
+    limit = args.limit
+
+    print(f"Running pipeline: {limit} {industry} in {city}...")
     try:
         data = call_pipeline(city, industry, limit)
     except Exception as exc:
