@@ -126,7 +126,6 @@ class PipelineRequest(BaseModel):
     country: Optional[str] = None
     limit: Optional[int] = None         # defaults to PIPELINE_DEFAULT_LIMIT
     min_score: Optional[float] = None   # defaults to PIPELINE_MIN_SCORE
-    notify_telegram: bool = True
 
 
 class PipelineResult(BaseModel):
@@ -138,4 +137,3 @@ class PipelineResult(BaseModel):
     skipped_no_contact: int
     skipped_low_score: int
     leads: List[LeadOut]
-    telegram_sent: bool

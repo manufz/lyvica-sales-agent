@@ -14,12 +14,10 @@ from app.email_sender import send_email
 from app.followups import get_due_leads, send_due_followups
 from app.models import Lead, Message
 from app.sourcer import source_leads
-from app.telegram_notifier import notify_pipeline_results, notify_simple
 from app.outreach_templates import (
     derive_desired_action,
     derive_primary_issue,
     render_initial,
-    render_followup,
 )
 from app.reply_classifier import classify_reply_text
 from app.schemas import (
@@ -337,12 +335,12 @@ def ingest_leads(leads: list[IngestLeadRequest], db: Session = Depends(get_db)):
 @app.post("/leads/pipeline", response_model=PipelineResult, dependencies=[HermesAuth])
 def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
     """
-    Full autonomous pipeline:
+    Full autonomous pipeline — pure API, no messaging:
     1. Source businesses from Google Places
     2. Research each (contact discovery + scoring)
     3. Filter qualifying leads (has contact + score >= min_score)
     4. Draft initial outreach for each qualifying lead
-    5. Send Telegram notification with results
+    5. Return structured JSON — Hermes handles messaging via its own gateway
     """
     from urllib.parse import urlparse
 
@@ -362,7 +360,7 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
     total_researched = 0
 
     for item in sourced:
-        # 2. Contact discovery
+        # 2. Contact discovery — never crash the whole pipeline
         try:
             contacts = discover_contacts(item["website_url"])
         except Exception as exc:
@@ -372,7 +370,7 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
                 "contact_form_url": None, "instagram_url": None, "checked_urls": [],
             }
 
-        # Skip if no contact at all — nothing we can do
+        # Skip if no contact channel found — nothing we can do
         has_contact = bool(
             contacts["email"] or contacts["contact_form_url"] or contacts["instagram_url"]
         )
@@ -380,7 +378,7 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
             skipped_no_contact += 1
             continue
 
-        # 3. Score the website
+        # 3. Score the website — never crash the whole pipeline
         parsed = urlparse(item["website_url"])
         domain = (parsed.netloc or parsed.path).removeprefix("www.")
         scoring = score_domain(
@@ -452,34 +450,6 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         total_researched += 1
         qualifying_leads.append(lead)
 
-    # 5. Telegram notification
-    telegram_sent = False
-    if req.notify_telegram:
-        lead_dicts = [
-            {
-                "id": str(lead.id),
-                "company_name": lead.company_name,
-                "website_url": lead.website_url,
-                "score": float(lead.score) if lead.score is not None else None,
-                "tier": lead.tier,
-                "email": lead.email,
-                "contact_form_url": lead.contact_form_url,
-                "instagram_url": lead.instagram_url,
-                "recommended_channel": lead.recommended_channel,
-                "primary_issue": lead.primary_issue,
-                "first_subject": lead.first_subject,
-                "first_body": lead.first_body,
-            }
-            for lead in qualifying_leads
-        ]
-        notify_pipeline_results(
-            city=city,
-            industry=industry,
-            total_sourced=total_sourced,
-            qualifying=lead_dicts,
-        )
-        telegram_sent = True
-
     return PipelineResult(
         city=city,
         industry=industry,
@@ -489,5 +459,4 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         skipped_no_contact=skipped_no_contact,
         skipped_low_score=skipped_low_score,
         leads=qualifying_leads,
-        telegram_sent=telegram_sent,
     )
