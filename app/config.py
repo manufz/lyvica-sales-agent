@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     AGENTMAIL_USERNAME: str = ""        # optional, for a custom inbox username
     AGENTMAIL_DOMAIN: str = ""          # optional, for a custom domain
     AGENTMAIL_DISPLAY_NAME: str = "Manuel"
+    AGENTMAIL_WEBHOOK_SECRET: str = ""  # Svix signing secret (whsec_...) for inbound webhook
     STRIPE_SECRET_KEY: str = ""
     STRIPE_STARTER_PRICE_ID: str = ""
     STRIPE_PRO_PRICE_ID: str = ""

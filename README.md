@@ -5,35 +5,43 @@ websites and turning them into qualified, contactable sales leads.
 
 It **sources** businesses (Google Places), **discovers** their contacts,
 **scores** their websites (PageSpeed + an LLM vision judgment of how dated they
-look), **drafts** tailored outreach, and **posts** the qualifying leads to
-Telegram — rotating across a whole market over time. A FastAPI backend does all
-the deterministic work; **Hermes Agent** drives it conversationally via a local
-**MCP server**.
+look), **drafts** tailored outreach, **sends** it via AgentMail, and **classifies
+replies** automatically — sweeping across whole markets over time and posting
+qualifying leads to Telegram. A FastAPI backend does all the deterministic work;
+**Hermes Agent** drives it conversationally via a local **MCP server**.
 
 ## Architecture
 
 ```
-        Telegram group  ◄──────────────┐  (lead summaries, you give commands)
-              │                         │
-              ▼                         │
-        Hermes Agent  ── MCP tools ──►  mcp_server.py (stdio)
-        (Qwen3 via TrueFoundry)             │  calls
-                                            ▼
-                            lyvica-sales-agent  (FastAPI :9000)
-                                            │
-              ┌──────────────┬──────────────┼───────────────┬───────────────┐
-              ▼              ▼              ▼               ▼               ▼
-          SQLite        Google Places   app/scoring/     Resend          Stripe
-        (CRM: leads,    (sourcing +     (in-process:     (email)         (links)
-         messages,       PageSpeed)      signals+vision)
-         coverage)
+        Telegram group  ◄───────────────┐  (lead digests + you give commands)
+              │                          │
+              ▼                          │
+        Hermes Agent  ── MCP tools ──►   mcp_server.py (stdio)
+        (virtual model group)                │  calls
+                                             ▼
+   inbound replies                lyvica-sales-agent (FastAPI :9000)
+   AgentMail ──webhook──►  /webhooks/agentmail   │
+   (Svix-verified)                               │
+              ┌───────────┬──────────────┬───────┼────────┬─────────────┐
+              ▼           ▼              ▼        ▼        ▼             ▼
+          SQLite     Google Places   app/scoring/  AgentMail        Stripe
+        (CRM: leads, (sourcing +     (in-process:  (send + receive  (links)
+         messages,    PageSpeed)      signals +     email)
+         coverage)                    vision)
 ```
 
 Everything runs on one machine. Scoring is **in-process** (no separate service).
-The CRM is **SQLite** (no Postgres). The LLMs are served through the
-**TrueFoundry** OpenAI-compatible gateway:
-- **Conversation/orchestration:** `qwen.qwen3-235b-a22b` (Hermes)
-- **Visual datedness judgment:** `qwen.qwen3-vl-235b-a22b` (scoring)
+The CRM is **SQLite** (no Postgres).
+
+**LLMs via TrueFoundry Virtual Model Groups** (fallback chains — swap models in
+the console without redeploying):
+- **Agent** (`lyvica-agent/virtual-agent-model`): Claude Sonnet 4.6 → Qwen3-235B → DeepSeek
+- **Vision** (`lyvica-vision/virtual-vision-model`): Claude Sonnet 4.6 → Qwen3-VL 235B → Pixtral
+
+**Email via AgentMail** (`lyvica@agentmail.to`) — sends outreach AND receives
+replies. Inbound mail hits `/webhooks/agentmail` (Svix-verified), which matches
+the reply to a lead, classifies it, stores it, and pings Telegram. (Resend is
+still supported as a fallback if `AGENTMAIL_API_KEY` is unset.)
 
 ## How the pipeline works
 
@@ -77,12 +85,15 @@ curl http://localhost:9000/health     # {"ok": true}
 ### Required environment variables
 | Var | Purpose |
 |-----|---------|
-| `GATEWAY_BASE_URL` / `GATEWAY_API_KEY` | TrueFoundry gateway (vision scoring) |
-| `VISION_MODEL` | vision model id (default Qwen3-VL 235B) |
+| `GATEWAY_BASE_URL` / `GATEWAY_API_KEY` | TrueFoundry gateway |
+| `VISION_MODEL` | vision model / virtual group (e.g. `lyvica-vision/virtual-vision-model`) |
 | `GOOGLE_PLACES_API_KEY` | lead sourcing |
 | `PAGESPEED_API_KEY` | mobile performance signal |
 | `HERMES_SHARED_SECRET` | auth header for all write endpoints |
-| `RESEND_API_KEY` / `FROM_EMAIL` | outbound email (optional until you send) |
+| `AGENTMAIL_API_KEY` | email send + receive (preferred provider) |
+| `AGENTMAIL_INBOX_ID` | sending inbox address, e.g. `lyvica@agentmail.to` |
+| `AGENTMAIL_WEBHOOK_SECRET` | Svix `whsec_…` for inbound webhook verification |
+| `RESEND_API_KEY` / `FROM_EMAIL` | fallback email provider (used only if no AgentMail key) |
 | `STRIPE_*` | payment links (optional) |
 | `TELEGRAM_CHAT_ID` | leave blank → delivers to Hermes' home channel |
 | `PIPELINE_DEFAULT_*` / `PIPELINE_MIN_SCORE` | pipeline defaults |
@@ -95,14 +106,16 @@ All write endpoints require header `x-hermes-secret: <HERMES_SHARED_SECRET>`.
 |--------|------|---------|
 | GET  | `/health` | liveness |
 | POST | `/leads/pipeline` | **autonomous run** — source→score→draft (auto-selects market if none given) |
+| POST | `/leads/sweep` | work N markets across different cities in one run |
 | GET  | `/markets/stats` | yield table across all markets + recommended next |
 | POST | `/leads/research` | research + score ONE business |
 | POST | `/leads/{id}/draft-initial` | (re)generate the first-email draft |
-| POST | `/leads/{id}/send-initial` | send the drafted email via Resend |
+| POST | `/leads/{id}/send-initial` | send the drafted email (AgentMail) |
 | POST | `/email/send` | send a raw email |
 | GET  | `/followups/due` | leads due a follow-up |
 | POST | `/followups/send-due` | send all due follow-ups |
-| POST | `/replies/classify` | classify an inbound reply |
+| POST | `/replies/classify` | classify an inbound reply (manual) |
+| POST | `/webhooks/agentmail` | inbound email webhook (Svix-verified) — auto-classifies replies |
 | POST | `/stripe/checkout-link` | create a payment link (buying-intent gated) |
 | POST | `/leads/ingest` | bulk insert/update leads |
 
@@ -116,7 +129,7 @@ curl -X POST http://localhost:9000/leads/pipeline \
 ## Hermes integration (MCP server)
 
 Hermes talks to this backend through a local stdio **MCP server**
-(`mcp_server.py`), not curl. It exposes typed tools: `find_leads`,
+(`mcp_server.py`), not curl. It exposes typed tools: `find_leads`, `sweep`,
 `market_stats`, `research_lead`, `send_initial`, `classify_reply`,
 `create_payment_link`.
 
@@ -140,9 +153,14 @@ neighborhoods as separate city entries.
 
 Runs as `launchd` services:
 - `com.lyvica.sales-agent` — the FastAPI app (always on, :9000)
-- `com.lyvica.pipeline` — daily 9 AM auto-selected pipeline run
+- `com.lyvica.pipeline` — twice-daily area sweeps (09:00 & 15:00, 3 markets each)
 - `com.lyvica.followups` — hourly follow-up sender
 - `ai.hermes.gateway` — Hermes gateway (Telegram + MCP)
+
+Inbound email replies reach the app via a **Cloudflare tunnel**: the public
+hostname `hooks-macpro.merchin.fr` is path-restricted (only `/webhooks/*` is
+exposed) and routes to `localhost:9000`. AgentMail is registered to POST
+`message.received` events there.
 
 ## Tests
 ```bash
