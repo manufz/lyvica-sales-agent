@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     PAGESPEED_API_KEY: str = ""
     GATEWAY_BASE_URL: str = "https://gateway.truefoundry.ai/v1"
     GATEWAY_API_KEY: str = ""
-    VISION_MODEL: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    # Qwen3.5-VL works out of the box on TrueFoundry. Claude Sonnet 4.5
+    # (aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0) is a stronger
+    # vision model but requires the Anthropic use-case form on the AWS account.
+    VISION_MODEL: str = "nvidia-kimi-k2/qwen3.5-122b-a10b"
     # Pipeline defaults — override per request or leave as defaults
     PIPELINE_DEFAULT_CITY: str = "San Francisco"
     PIPELINE_DEFAULT_INDUSTRY: str = "dentist"
