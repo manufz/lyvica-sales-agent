@@ -205,34 +205,40 @@ def send_initial(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     lead.follow_up_due_at = now + timedelta(days=3)
     db.commit()
 
-    return SendResult(status="sent", message_id=msg.id, provider_id=result.get("id"))
+    return SendResult(status="sent", message_id=msg.id, provider_id=result.get("id") or result.get("message_id"))
 
 
 # ── Raw Email Send ────────────────────────────────────────────────────────────
 
 @app.post("/email/send", response_model=SendResult, dependencies=[HermesAuth])
 def send_raw_email(req: SendEmailRequest, db: Session = Depends(get_db)):
-    result = send_email(req.to, req.subject, req.body)
-
-    msg = Message(
-        id=uuid.uuid4(),
-        lead_id=req.lead_id,
-        channel="email",
-        direction="outbound",
-        subject=req.subject,
-        body=req.body,
-        status="sent",
-        provider_payload=result,
-        sent_at=datetime.now(timezone.utc),
-    )
+    # Validate the lead first (if one was given) before sending.
     if req.lead_id:
         lead = db.get(Lead, req.lead_id)
         if not lead:
             raise HTTPException(404, "Lead not found")
-    db.add(msg)
-    db.commit()
 
-    return SendResult(status="sent", message_id=msg.id, provider_id=result.get("id"))
+    result = send_email(req.to, req.subject, req.body)
+
+    # Only store a Message when it's tied to a lead (messages.lead_id is required).
+    msg_id = None
+    if req.lead_id:
+        msg = Message(
+            id=uuid.uuid4(),
+            lead_id=req.lead_id,
+            channel="email",
+            direction="outbound",
+            subject=req.subject,
+            body=req.body,
+            status="sent",
+            provider_payload=result,
+            sent_at=datetime.now(timezone.utc),
+        )
+        db.add(msg)
+        db.commit()
+        msg_id = msg.id
+
+    return SendResult(status="sent", message_id=msg_id, provider_id=result.get("id") or result.get("message_id"))
 
 
 # ── Follow-ups ────────────────────────────────────────────────────────────────
