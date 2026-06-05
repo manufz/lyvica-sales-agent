@@ -11,5 +11,6 @@ stripe>=9.0.0
 python-dotenv>=1.0.0
 openai>=1.30.0
 playwright>=1.44.0
+mcp>=1.0.0
 pytest>=8.0.0
 pytest-anyio>=0.0.0
