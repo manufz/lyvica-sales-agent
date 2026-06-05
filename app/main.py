@@ -87,6 +87,7 @@ def research_lead(req: ResearchRequest, db: Session = Depends(get_db)):
         company_name=req.company_name,
         city=req.city,
         industry=req.industry,
+        website_url=req.website_url,
     )
 
     # Recommended channel
@@ -386,9 +387,14 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
             company_name=item["company_name"],
             city=city,
             industry=industry,
+            website_url=item["website_url"],
         )
 
+        # Confidence gate: skip leads we couldn't score reliably (guesses).
         score = scoring.get("score")
+        if not scoring.get("scoreable", True):
+            skipped_low_score += 1
+            continue
         if score is not None and score < min_score:
             skipped_low_score += 1
             continue
@@ -404,7 +410,10 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
             channel = "none"
 
         pitch_angles = scoring.get("pitch_angles") or []
-        primary_issue = derive_primary_issue(pitch_angles)
+        # Prefer a concrete visible problem for the email's issue line; the full
+        # vision-written pitch is kept in pitch_angles[0] for Hermes to use.
+        visible = scoring.get("visible_problems") or []
+        primary_issue = visible[0] if visible else derive_primary_issue(pitch_angles)
         desired_action = derive_desired_action(industry)
 
         # Upsert lead

@@ -1,12 +1,16 @@
+"""
+Scoring client — now a thin wrapper around the in-process scoring module.
+
+Previously this made an HTTP call to a separate lyvica-scoring service.
+Scoring is now merged in (app.scoring) — direct function call, no network hop,
+no SSE parsing, no second service to keep alive.
+"""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
-import httpx
-
-from app.config import settings
+from app.scoring import score_domain as _score_domain
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +20,7 @@ _FALLBACK = {
     "confidence": None,
     "subscores": {},
     "pitch_angles": [],
+    "visible_problems": [],
     "scoring_payload": {},
 }
 
@@ -25,42 +30,17 @@ def score_domain(
     company_name: Optional[str] = None,
     city: Optional[str] = None,
     industry: Optional[str] = None,
+    website_url: Optional[str] = None,
 ) -> dict:
-    """
-    Calls lyvica-scoring POST /api/score with form data.
-    The endpoint streams SSE; we collect the first 'result' event for this domain.
-
-    If the endpoint path or request format changes, update here only.
-    """
-    url = f"{settings.LYVICA_SCORING_URL}/api/score"
+    """Score a domain via the in-process scoring module. Never raises."""
     try:
-        with httpx.Client(timeout=60) as client:
-            with client.stream(
-                "POST",
-                url,
-                data={"domains_text": domain, "min_score": 0, "concurrency": 1},
-            ) as r:
-                r.raise_for_status()
-                for line in r.iter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = json.loads(line[len("data:"):].strip())
-                    if payload.get("type") == "result":
-                        lead = payload["lead"]
-                        return {
-                            # lyvica-scoring uses rebuild_opportunity_score
-                            "score": lead.get("rebuild_opportunity_score"),
-                            "tier": lead.get("tier", "unknown"),
-                            "confidence": lead.get("confidence"),
-                            "subscores": lead.get("subscores", {}),
-                            "pitch_angles": lead.get("pitch_angles", []),
-                            "scoring_payload": lead,
-                        }
-        # No result event received
-        return {**_FALLBACK, "error": "no result from scoring stream"}
-    except httpx.HTTPStatusError as exc:
-        log.warning("scoring HTTP error %s: %s", exc.response.status_code, exc)
-        return {**_FALLBACK, "error": f"HTTP {exc.response.status_code}"}
+        return _score_domain(
+            domain=domain,
+            website_url=website_url,
+            company_name=company_name,
+            city=city,
+            industry=industry,
+        )
     except Exception as exc:
-        log.warning("scoring unavailable: %s", exc)
+        log.error("scoring failed for %s: %s", domain, exc)
         return {**_FALLBACK, "error": str(exc)}

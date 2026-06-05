@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     APP_BASE_URL: str = "http://localhost:9000"
     GOOGLE_PLACES_API_KEY: str = ""
     TELEGRAM_CHAT_ID: str = ""  # group or personal chat ID for pipeline delivery
+    # Scoring (merged in — no separate scoring service needed)
+    PAGESPEED_API_KEY: str = ""
+    GATEWAY_BASE_URL: str = "https://gateway.truefoundry.ai/v1"
+    GATEWAY_API_KEY: str = ""
+    VISION_MODEL: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
     # Pipeline defaults — override per request or leave as defaults
     PIPELINE_DEFAULT_CITY: str = "San Francisco"
     PIPELINE_DEFAULT_INDUSTRY: str = "dentist"
@@ -23,6 +28,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"  # tolerate stale/unrelated keys in .env
 
 
 settings = Settings()
