@@ -19,11 +19,12 @@ qualifying leads to Telegram. A FastAPI backend does all the deterministic work;
         Hermes Agent  ── MCP tools ──►   mcp_server.py (stdio)
         (virtual model group)                │  calls
                                              ▼
-   inbound replies                lyvica-sales-agent (FastAPI :9000)
-   AgentMail ──webhook──►  /webhooks/agentmail   │
-   (Svix-verified)                               │
-              ┌───────────┬──────────────┬───────┼────────┬─────────────┐
-              ▼           ▼              ▼        ▼        ▼             ▼
+                               lyvica-sales-agent (FastAPI :9000)
+   inbound replies                            │
+   AgentMail inbox ◄──poll every 2h── check_replies.py
+   (classify + notify)                        │
+              ┌───────────┬──────────────┬────┼─────────┬─────────────┐
+              ▼           ▼              ▼     ▼         ▼             ▼
           SQLite     Google Places   app/scoring/  AgentMail        Stripe
         (CRM: leads, (sourcing +     (in-process:  (send + receive  (links)
          messages,    PageSpeed)      signals +     email)
@@ -39,8 +40,8 @@ the console without redeploying):
 - **Vision** (`lyvica-vision/virtual-vision-model`): Claude Sonnet 4.6 → Qwen3-VL 235B → Pixtral
 
 **Email via AgentMail** (`lyvica@agentmail.to`) — sends outreach AND receives
-replies. Inbound mail hits `/webhooks/agentmail` (Svix-verified), which matches
-the reply to a lead, classifies it, stores it, and pings Telegram. (Resend is
+replies. A job (`scripts/check_replies.py`) **polls the inbox every 2 hours**,
+classifies new replies, matches them to leads, and pings Telegram. (Resend is
 still supported as a fallback if `AGENTMAIL_API_KEY` is unset.)
 
 ## How the pipeline works
@@ -91,8 +92,7 @@ curl http://localhost:9000/health     # {"ok": true}
 | `PAGESPEED_API_KEY` | mobile performance signal |
 | `HERMES_SHARED_SECRET` | auth header for all write endpoints |
 | `AGENTMAIL_API_KEY` | email send + receive (preferred provider) |
-| `AGENTMAIL_INBOX_ID` | sending inbox address, e.g. `lyvica@agentmail.to` |
-| `AGENTMAIL_WEBHOOK_SECRET` | Svix `whsec_…` for inbound webhook verification |
+| `AGENTMAIL_INBOX_ID` | inbox address, e.g. `lyvica@agentmail.to` (send + polled for replies) |
 | `RESEND_API_KEY` / `FROM_EMAIL` | fallback email provider (used only if no AgentMail key) |
 | `STRIPE_*` | payment links (optional) |
 | `TELEGRAM_CHAT_ID` | leave blank → delivers to Hermes' home channel |
@@ -114,8 +114,7 @@ All write endpoints require header `x-hermes-secret: <HERMES_SHARED_SECRET>`.
 | POST | `/email/send` | send a raw email |
 | GET  | `/followups/due` | leads due a follow-up |
 | POST | `/followups/send-due` | send all due follow-ups |
-| POST | `/replies/classify` | classify an inbound reply (manual) |
-| POST | `/webhooks/agentmail` | inbound email webhook (Svix-verified) — auto-classifies replies |
+| POST | `/replies/classify` | classify an inbound reply (manual, by lead_id) |
 | POST | `/stripe/checkout-link` | create a payment link (buying-intent gated) |
 | POST | `/leads/ingest` | bulk insert/update leads |
 
@@ -155,12 +154,8 @@ Runs as `launchd` services:
 - `com.lyvica.sales-agent` — the FastAPI app (always on, :9000)
 - `com.lyvica.pipeline` — twice-daily area sweeps (09:00 & 15:00, 3 markets each)
 - `com.lyvica.followups` — hourly follow-up sender
+- `com.lyvica.replies` — polls the AgentMail inbox every 2h, classifies replies
 - `ai.hermes.gateway` — Hermes gateway (Telegram + MCP)
-
-Inbound email replies reach the app via a **Cloudflare tunnel**: the public
-hostname `hooks-macpro.merchin.fr` is path-restricted (only `/webhooks/*` is
-exposed) and routes to `localhost:9000`. AgentMail is registered to POST
-`message.received` events there.
 
 ## Tests
 ```bash

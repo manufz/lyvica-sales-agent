@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Security, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -288,76 +288,7 @@ def classify_reply(req: ClassifyReplyRequest, db: Session = Depends(get_db)):
     )
 
 
-# ── Inbound email webhook (AgentMail → auto-classify replies) ──────────────────
-
-@app.post("/webhooks/agentmail")
-async def agentmail_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Receives AgentMail 'message.received' events when a prospect replies to the
-    agent's inbox. Verifies the Svix signature, matches the reply to a lead by
-    sender address, classifies it, stores it, and notifies Telegram.
-    No x-hermes-secret here — authenticity is the Svix signature.
-    """
-    import json
-    import re
-
-    raw = await request.body()
-
-    # Verify Svix signature (skip only if no secret configured — not recommended)
-    if settings.AGENTMAIL_WEBHOOK_SECRET:
-        try:
-            from svix.webhooks import Webhook
-            Webhook(settings.AGENTMAIL_WEBHOOK_SECRET).verify(raw, dict(request.headers))
-        except Exception as exc:
-            log.warning("AgentMail webhook signature verification failed: %s", exc)
-            raise HTTPException(status_code=401, detail="invalid webhook signature")
-
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid JSON")
-
-    if payload.get("event_type") != "message.received":
-        return {"ok": True, "ignored": payload.get("event_type")}
-
-    msg = payload.get("message", {}) or {}
-    raw_from = (msg.get("from") or "")
-    m = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", raw_from)
-    from_addr = (m.group(0) if m else raw_from).lower()
-    subject = msg.get("subject")
-    body = msg.get("text") or msg.get("preview") or ""
-
-    classification, action = classify_reply_text(body)
-
-    # Match to a lead by sender address
-    lead = None
-    if from_addr:
-        lead = db.query(Lead).filter(Lead.email.ilike(from_addr)).first()
-
-    if lead:
-        lead.reply_status = classification
-        if classification in ("not_interested", "unsubscribe"):
-            lead.opt_out = True
-        db.add(Message(
-            id=uuid.uuid4(), lead_id=lead.id, channel="email", direction="inbound",
-            subject=subject, body=body, status="received",
-            provider_payload={"from": from_addr, "message_id": msg.get("message_id")},
-            sent_at=datetime.now(timezone.utc),
-        ))
-        db.commit()
-
-    # Notify Telegram with the reply + classification + recommended action
-    from app.notify import send_telegram
-    who = f"{lead.company_name} ({from_addr})" if lead else from_addr
-    lead_line = f"\n🆔 {lead.id}" if lead else "\n(no matching lead)"
-    send_telegram(
-        f"📨 Reply from {who}\n"
-        f"🏷️ {classification} → {action}\n"
-        f"✉️ {subject or '(no subject)'}\n\n"
-        f"{body[:600]}{lead_line}"
-    )
-
-    return {"ok": True, "classification": classification, "matched_lead": bool(lead)}
+# Inbound replies are polled every 2h by scripts/check_replies.py (no webhook).
 
 
 # ── Stripe ────────────────────────────────────────────────────────────────────
