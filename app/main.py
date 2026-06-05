@@ -13,10 +13,13 @@ from app.db import get_db
 from app.email_sender import send_email
 from app.followups import get_due_leads, send_due_followups
 from app.models import Lead, Message
+from app.sourcer import source_leads
+from app.telegram_notifier import notify_pipeline_results, notify_simple
 from app.outreach_templates import (
     derive_desired_action,
     derive_primary_issue,
     render_initial,
+    render_followup,
 )
 from app.reply_classifier import classify_reply_text
 from app.schemas import (
@@ -26,6 +29,8 @@ from app.schemas import (
     FollowupSummary,
     IngestLeadRequest,
     LeadOut,
+    PipelineRequest,
+    PipelineResult,
     ResearchRequest,
     SendEmailRequest,
     SendResult,
@@ -325,3 +330,164 @@ def ingest_leads(leads: list[IngestLeadRequest], db: Session = Depends(get_db)):
 
     db.commit()
     return {"created": created, "updated": updated}
+
+
+# ── Autonomous Pipeline ───────────────────────────────────────────────────────
+
+@app.post("/leads/pipeline", response_model=PipelineResult, dependencies=[HermesAuth])
+def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
+    """
+    Full autonomous pipeline:
+    1. Source businesses from Google Places
+    2. Research each (contact discovery + scoring)
+    3. Filter qualifying leads (has contact + score >= min_score)
+    4. Draft initial outreach for each qualifying lead
+    5. Send Telegram notification with results
+    """
+    from urllib.parse import urlparse
+
+    city = req.city or settings.PIPELINE_DEFAULT_CITY
+    industry = req.industry or settings.PIPELINE_DEFAULT_INDUSTRY
+    country = req.country
+    limit = req.limit or settings.PIPELINE_DEFAULT_LIMIT
+    min_score = req.min_score if req.min_score is not None else settings.PIPELINE_MIN_SCORE
+
+    # 1. Source leads from Google Places
+    sourced = source_leads(city=city, industry=industry, country=country, limit=limit)
+    total_sourced = len(sourced)
+
+    qualifying_leads: list[Lead] = []
+    skipped_no_contact = 0
+    skipped_low_score = 0
+    total_researched = 0
+
+    for item in sourced:
+        # 2. Contact discovery
+        try:
+            contacts = discover_contacts(item["website_url"])
+        except Exception as exc:
+            log.error("contact discovery failed for %s: %s", item["website_url"], exc)
+            contacts = {
+                "email_addresses": [], "email": None,
+                "contact_form_url": None, "instagram_url": None, "checked_urls": [],
+            }
+
+        # Skip if no contact at all — nothing we can do
+        has_contact = bool(
+            contacts["email"] or contacts["contact_form_url"] or contacts["instagram_url"]
+        )
+        if not has_contact:
+            skipped_no_contact += 1
+            continue
+
+        # 3. Score the website
+        parsed = urlparse(item["website_url"])
+        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        scoring = score_domain(
+            domain=domain,
+            company_name=item["company_name"],
+            city=city,
+            industry=industry,
+        )
+
+        score = scoring.get("score")
+        if score is not None and score < min_score:
+            skipped_low_score += 1
+            continue
+
+        # Recommended channel
+        if contacts["email"]:
+            channel = "email"
+        elif contacts["contact_form_url"]:
+            channel = "contact_form"
+        elif contacts["instagram_url"]:
+            channel = "instagram"
+        else:
+            channel = "none"
+
+        pitch_angles = scoring.get("pitch_angles") or []
+        primary_issue = derive_primary_issue(pitch_angles)
+        desired_action = derive_desired_action(industry)
+
+        # Upsert lead
+        lead = db.query(Lead).filter_by(domain=domain, company_name=item["company_name"]).first()
+        if not lead:
+            lead = Lead(id=uuid.uuid4())
+            db.add(lead)
+
+        lead.company_name = item["company_name"]
+        lead.website_url = item["website_url"]
+        lead.domain = domain
+        lead.city = city
+        lead.country = country
+        lead.industry = industry
+        lead.email = contacts["email"]
+        lead.email_addresses = contacts["email_addresses"]
+        lead.contact_form_url = contacts["contact_form_url"]
+        lead.instagram_url = contacts["instagram_url"]
+        lead.score = scoring.get("score")
+        lead.tier = scoring.get("tier")
+        lead.confidence = scoring.get("confidence")
+        lead.subscores = scoring.get("subscores")
+        lead.pitch_angles = pitch_angles
+        lead.scoring_payload = scoring.get("scoring_payload")
+        lead.primary_issue = primary_issue
+        lead.desired_action = desired_action
+        lead.recommended_channel = channel
+        lead.updated_at = datetime.now(timezone.utc)
+
+        # 4. Draft initial outreach
+        subject, body = render_initial(
+            company_name=lead.company_name,
+            industry=industry or "local",
+            city=city or "your area",
+            primary_issue=primary_issue,
+            desired_action=desired_action,
+        )
+        lead.first_subject = subject
+        lead.first_body = body
+
+        db.commit()
+        db.refresh(lead)
+        total_researched += 1
+        qualifying_leads.append(lead)
+
+    # 5. Telegram notification
+    telegram_sent = False
+    if req.notify_telegram:
+        lead_dicts = [
+            {
+                "id": str(lead.id),
+                "company_name": lead.company_name,
+                "website_url": lead.website_url,
+                "score": float(lead.score) if lead.score is not None else None,
+                "tier": lead.tier,
+                "email": lead.email,
+                "contact_form_url": lead.contact_form_url,
+                "instagram_url": lead.instagram_url,
+                "recommended_channel": lead.recommended_channel,
+                "primary_issue": lead.primary_issue,
+                "first_subject": lead.first_subject,
+                "first_body": lead.first_body,
+            }
+            for lead in qualifying_leads
+        ]
+        notify_pipeline_results(
+            city=city,
+            industry=industry,
+            total_sourced=total_sourced,
+            qualifying=lead_dicts,
+        )
+        telegram_sent = True
+
+    return PipelineResult(
+        city=city,
+        industry=industry,
+        total_sourced=total_sourced,
+        total_researched=total_researched,
+        qualifying=len(qualifying_leads),
+        skipped_no_contact=skipped_no_contact,
+        skipped_low_score=skipped_low_score,
+        leads=qualifying_leads,
+        telegram_sent=telegram_sent,
+    )

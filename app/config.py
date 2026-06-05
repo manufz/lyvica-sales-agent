@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     STRIPE_PRO_LINK: str = ""
     HERMES_SHARED_SECRET: str = "change-this"
     APP_BASE_URL: str = "http://localhost:9000"
+    GOOGLE_PLACES_API_KEY: str = ""
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    # Pipeline defaults — override per request or leave as defaults
+    PIPELINE_DEFAULT_CITY: str = "San Francisco"
+    PIPELINE_DEFAULT_INDUSTRY: str = "dentist"
+    PIPELINE_DEFAULT_LIMIT: int = 10
+    PIPELINE_MIN_SCORE: float = 40.0
 
     class Config:
         env_file = ".env"

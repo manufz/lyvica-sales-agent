@@ -118,3 +118,24 @@ class StripeResult(BaseModel):
     link: str
     lead_id: uuid.UUID
     package: str
+
+
+class PipelineRequest(BaseModel):
+    city: Optional[str] = None          # defaults to PIPELINE_DEFAULT_CITY
+    industry: Optional[str] = None      # defaults to PIPELINE_DEFAULT_INDUSTRY
+    country: Optional[str] = None
+    limit: Optional[int] = None         # defaults to PIPELINE_DEFAULT_LIMIT
+    min_score: Optional[float] = None   # defaults to PIPELINE_MIN_SCORE
+    notify_telegram: bool = True
+
+
+class PipelineResult(BaseModel):
+    city: str
+    industry: str
+    total_sourced: int
+    total_researched: int
+    qualifying: int
+    skipped_no_contact: int
+    skipped_low_score: int
+    leads: List[LeadOut]
+    telegram_sent: bool
