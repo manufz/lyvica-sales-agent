@@ -25,6 +25,11 @@ When someone says anything like "look for customers in [city] in [sector]",
 If asked to "find leads" with no specific market, call `find_leads` with no
 arguments — it auto-selects the next best market by yield.
 
+When asked to prospect BROADLY / "across areas" / "get a batch of leads", call
+the `sweep` tool (default 3 markets across different cities). It posts one
+combined, grouped digest to Telegram. Same fire-and-forget behavior: acknowledge
+and stop.
+
 ## Choosing markets
 When asked "what should we work next", "where are the best leads", "pick a market":
 - Call `market_stats` — it returns every market's yield + a recommended next.

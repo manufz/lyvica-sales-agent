@@ -139,3 +139,25 @@ class PipelineResult(BaseModel):
     skipped_no_contact: int
     skipped_low_score: int
     leads: List[LeadOut]
+
+
+class SweepRequest(BaseModel):
+    count: Optional[int] = None        # markets per sweep (default 3)
+    limit: Optional[int] = None        # fresh businesses sourced per market
+    min_score: Optional[float] = None
+    country: Optional[str] = None
+
+
+class MarketResult(BaseModel):
+    city: str
+    industry: str
+    total_sourced: int
+    qualifying: int
+    leads: List[LeadOut]
+
+
+class SweepResult(BaseModel):
+    markets_worked: int
+    total_sourced: int
+    total_qualifying: int
+    markets: List[MarketResult]

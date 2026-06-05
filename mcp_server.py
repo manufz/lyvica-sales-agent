@@ -66,6 +66,24 @@ def find_leads(city: str = "", sector: str = "") -> str:
 
 
 @mcp.tool()
+def sweep(count: int = 3) -> str:
+    """
+    Proactively prospect ACROSS several different areas/sectors in one run.
+    Sources, scores, contacts, and drafts for `count` markets spread across
+    different cities, then posts a combined digest to Telegram. Use when asked to
+    "find leads across areas", "prospect broadly", or "get me a batch of leads".
+    Returns immediately; results arrive in Telegram in a few minutes.
+    """
+    py = os.path.join(_REPO, ".venv", "bin", "python")
+    script = os.path.join(_REPO, "scripts", "run_pipeline.py")
+    log = os.path.expanduser("~/logs/pipeline.log")
+    with open(log, "a") as lf:
+        subprocess.Popen([py, script, "--sweep", str(count)],
+                         stdout=lf, stderr=lf, start_new_session=True)
+    return f"Started a {count}-area sweep — qualifying leads will post to Telegram shortly."
+
+
+@mcp.tool()
 def market_stats() -> dict:
     """
     Return the lead-yield table across every city × sector market, plus the

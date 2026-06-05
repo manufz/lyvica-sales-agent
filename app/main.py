@@ -13,7 +13,7 @@ from app.db import get_db
 from app.email_sender import send_email
 from app.followups import get_due_leads, send_due_followups
 from app.models import Lead, Message
-from app.markets import get_coverage_stats, record_run, select_next_market
+from app.markets import get_coverage_stats, record_run, select_next_market, select_next_markets
 from app.sourcer import source_leads
 from app.outreach_templates import (
     derive_desired_action,
@@ -28,9 +28,12 @@ from app.schemas import (
     FollowupSummary,
     IngestLeadRequest,
     LeadOut,
+    MarketResult,
     PipelineRequest,
     PipelineResult,
     ResearchRequest,
+    SweepRequest,
+    SweepResult,
     SendEmailRequest,
     SendResult,
     StripeCheckoutRequest,
@@ -336,33 +339,19 @@ def ingest_leads(leads: list[IngestLeadRequest], db: Session = Depends(get_db)):
 
 # ── Autonomous Pipeline ───────────────────────────────────────────────────────
 
-@app.post("/leads/pipeline", response_model=PipelineResult, dependencies=[HermesAuth])
-def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
+def process_market(db: Session, city: str, industry: str,
+                   country: Optional[str], limit: int, min_score: float) -> dict:
     """
-    Full autonomous pipeline — pure API, no messaging:
-    1. Source businesses from Google Places
-    2. Research each (contact discovery + scoring)
-    3. Filter qualifying leads (has contact + score >= min_score)
-    4. Draft initial outreach for each qualifying lead
-    5. Return structured JSON — Hermes handles messaging via its own gateway
+    Work ONE (city, sector) market: source fresh businesses, discover contacts,
+    score, draft outreach for qualifiers, and record coverage. Returns a dict
+    with the qualifying Lead rows and the run stats. Shared by /leads/pipeline
+    and /leads/sweep.
     """
     from urllib.parse import urlparse
 
-    # If no market is specified, the yield-aware selector picks the next one
-    # (rotation across the whole configured market over time).
-    if req.city and req.industry:
-        city, industry = req.city, req.industry
-    else:
-        city, industry = select_next_market(db)
-    country = req.country
-    limit = req.limit or settings.PIPELINE_DEFAULT_LIMIT
-    min_score = req.min_score if req.min_score is not None else settings.PIPELINE_MIN_SCORE
-
-    # Dedup: skip businesses we've already sourced so each run finds FRESH leads
-    # and coverage advances. (Paginates deeper when the top results are known.)
+    # Dedup: skip businesses already in the DB so each run finds FRESH leads.
     known_domains = {d for (d,) in db.query(Lead.domain).filter(Lead.domain.isnot(None)).all()}
 
-    # 1. Source fresh leads from Google Places (paginated, deduped)
     src = source_leads(
         city=city, industry=industry, country=country,
         limit=limit, exclude_domains=known_domains,
@@ -373,51 +362,36 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
     qualifying_leads: list[Lead] = []
     skipped_no_contact = 0
     skipped_low_score = 0
-    total_researched = 0
 
     for item in sourced:
-        # 2. Contact discovery — never crash the whole pipeline
+        # Contact discovery — never crash the whole run
         try:
             contacts = discover_contacts(item["website_url"])
         except Exception as exc:
             log.error("contact discovery failed for %s: %s", item["website_url"], exc)
-            contacts = {
-                "email_addresses": [], "email": None,
-                "contact_form_url": None, "instagram_url": None, "checked_urls": [],
-            }
+            contacts = {"email_addresses": [], "email": None,
+                        "contact_form_url": None, "instagram_url": None, "checked_urls": []}
 
-        # Skip if no contact channel found — nothing we can do
-        has_contact = bool(
-            contacts["email"] or contacts["contact_form_url"] or contacts["instagram_url"]
-        )
-        if not has_contact:
+        if not (contacts["email"] or contacts["contact_form_url"] or contacts["instagram_url"]):
             skipped_no_contact += 1
             continue
 
-        # 3. Score the website — never crash the whole pipeline
         parsed = urlparse(item["website_url"])
         domain = (parsed.netloc or parsed.path).removeprefix("www.")
         scoring = score_domain(
-            domain=domain,
-            company_name=item["company_name"],
-            city=city,
-            industry=industry,
-            website_url=item["website_url"],
+            domain=domain, company_name=item["company_name"],
+            city=city, industry=industry, website_url=item["website_url"],
         )
 
-        # Confidence gate: skip leads we couldn't score reliably (guesses).
         score = scoring.get("score")
         buying_signals = scoring.get("buying_signals") or []
         if not scoring.get("scoreable", True):
             skipped_low_score += 1
             continue
-        # A buying signal (e.g. DIY builder) qualifies a lead even if the site's
-        # quality score is below threshold — that's the whole point of the signal.
         if score is not None and score < min_score and not buying_signals:
             skipped_low_score += 1
             continue
 
-        # Recommended channel
         if contacts["email"]:
             channel = "email"
         elif contacts["contact_form_url"]:
@@ -428,13 +402,10 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
             channel = "none"
 
         pitch_angles = scoring.get("pitch_angles") or []
-        # Prefer a concrete visible problem for the email's issue line; the full
-        # vision-written pitch is kept in pitch_angles[0] for Hermes to use.
         visible = scoring.get("visible_problems") or []
         primary_issue = visible[0] if visible else derive_primary_issue(pitch_angles)
         desired_action = derive_desired_action(industry)
 
-        # Upsert lead
         lead = db.query(Lead).filter_by(domain=domain, company_name=item["company_name"]).first()
         if not lead:
             lead = Lead(id=uuid.uuid4())
@@ -463,12 +434,9 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
         lead.recommended_channel = channel
         lead.updated_at = datetime.now(timezone.utc)
 
-        # 4. Draft initial outreach
         subject, body = render_initial(
-            company_name=lead.company_name,
-            industry=industry or "local",
-            city=city or "your area",
-            primary_issue=primary_issue,
+            company_name=lead.company_name, industry=industry or "local",
+            city=city or "your area", primary_issue=primary_issue,
             desired_action=desired_action,
         )
         lead.first_subject = subject
@@ -476,25 +444,74 @@ def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
 
         db.commit()
         db.refresh(lead)
-        total_researched += 1
         qualifying_leads.append(lead)
 
-    # Record coverage so the selector can rotate by yield next time.
-    record_run(
-        db, city=city, sector=industry,
-        sourced=total_sourced, qualified=len(qualifying_leads),
-        exhausted=src["exhausted"],
+    record_run(db, city=city, sector=industry, sourced=total_sourced,
+               qualified=len(qualifying_leads), exhausted=src["exhausted"])
+
+    return {
+        "city": city, "industry": industry,
+        "total_sourced": total_sourced,
+        "qualifying_leads": qualifying_leads,
+        "skipped_no_contact": skipped_no_contact,
+        "skipped_low_score": skipped_low_score,
+    }
+
+
+@app.post("/leads/pipeline", response_model=PipelineResult, dependencies=[HermesAuth])
+def run_pipeline(req: PipelineRequest, db: Session = Depends(get_db)):
+    """Work one market (selector picks it if city/industry omitted)."""
+    if req.city and req.industry:
+        city, industry = req.city, req.industry
+    else:
+        city, industry = select_next_market(db)
+    limit = req.limit or settings.PIPELINE_DEFAULT_LIMIT
+    min_score = req.min_score if req.min_score is not None else settings.PIPELINE_MIN_SCORE
+
+    r = process_market(db, city, industry, req.country, limit, min_score)
+    return PipelineResult(
+        city=r["city"], industry=r["industry"],
+        total_sourced=r["total_sourced"],
+        total_researched=len(r["qualifying_leads"]),
+        qualifying=len(r["qualifying_leads"]),
+        skipped_no_contact=r["skipped_no_contact"],
+        skipped_low_score=r["skipped_low_score"],
+        leads=r["qualifying_leads"],
     )
 
-    return PipelineResult(
-        city=city,
-        industry=industry,
+
+@app.post("/leads/sweep", response_model=SweepResult, dependencies=[HermesAuth])
+def run_sweep(req: SweepRequest, db: Session = Depends(get_db)):
+    """
+    Work several markets in one sweep, spread across different cities, so each
+    run surfaces qualifying leads from multiple areas. Used by the twice-daily
+    schedule and by Hermes when asked to prospect broadly.
+    """
+    count = req.count or 3
+    limit = req.limit or settings.PIPELINE_DEFAULT_LIMIT
+    min_score = req.min_score if req.min_score is not None else settings.PIPELINE_MIN_SCORE
+
+    markets = select_next_markets(db, count=count, diversify_by_city=True)
+
+    market_results: list[MarketResult] = []
+    total_qualifying = 0
+    total_sourced = 0
+    for city, sector in markets:
+        r = process_market(db, city, sector, req.country, limit, min_score)
+        total_qualifying += len(r["qualifying_leads"])
+        total_sourced += r["total_sourced"]
+        market_results.append(MarketResult(
+            city=r["city"], industry=r["industry"],
+            total_sourced=r["total_sourced"],
+            qualifying=len(r["qualifying_leads"]),
+            leads=r["qualifying_leads"],
+        ))
+
+    return SweepResult(
+        markets_worked=len(market_results),
         total_sourced=total_sourced,
-        total_researched=total_researched,
-        qualifying=len(qualifying_leads),
-        skipped_no_contact=skipped_no_contact,
-        skipped_low_score=skipped_low_score,
-        leads=qualifying_leads,
+        total_qualifying=total_qualifying,
+        markets=market_results,
     )
 
 

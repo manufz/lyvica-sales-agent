@@ -49,49 +49,83 @@ def _coverage_map(db: Session) -> dict[tuple[str, str], MarketCoverage]:
     return {_key(r.city, r.sector): r for r in rows}
 
 
-def select_next_market(db: Session) -> tuple[str, str]:
+def _ranked_markets(db: Session) -> list[tuple[str, str]]:
     """
-    Pick the next (city, sector) to work.
-
-    Policy:
-      1. EXPLORE — any market never run yet is chosen first (breadth before depth),
-         in stable universe order.
-      2. EXPLOIT — once everything has been tried, pick the non-exhausted market
-         with the highest yield (qualified / sourced), tie-broken by least-recently
-         run (keeps cycling and re-deepening via pagination + dedup).
-      3. RESET — if every market is exhausted, clear the exhausted flags and start
-         a fresh cycle (sites change over time; re-explore).
+    All workable markets in priority order:
+      EXPLORE first — markets never run yet, in stable universe order (breadth),
+      then EXPLOIT — non-exhausted markets by highest yield (qualified/sourced),
+      tie-broken by least-recently-run (keeps cycling + re-deepening).
+    Returns [] only when every market is exhausted (caller handles reset).
     """
     targets = load_targets()
     universe = [(c, s) for c in targets["cities"] for s in targets["sectors"]]
     cov = _coverage_map(db)
 
-    # 1. Exploration: first untried market in universe order
+    untried: list[tuple[str, str]] = []
+    tried: list[tuple[str, str]] = []
     for city, sector in universe:
         row = cov.get(_key(city, sector))
         if row is None or row.runs == 0:
-            return city, sector
+            untried.append((city, sector))
+        elif not row.exhausted:
+            tried.append((city, sector))
 
-    # 2. Exploitation among non-exhausted markets
-    candidates = [(c, s) for (c, s) in universe if not cov[_key(c, s)].exhausted]
-
-    # 3. Reset if all exhausted
-    if not candidates:
-        log.info("all markets exhausted — resetting for a fresh cycle")
-        for row in cov.values():
-            row.exhausted = False
-        db.commit()
-        candidates = universe
-
-    def yield_score(city: str, sector: str) -> tuple:
-        r = cov[_key(city, sector)]
+    def yield_score(cs: tuple[str, str]) -> tuple:
+        r = cov[_key(*cs)]
         ratio = r.total_qualified / max(r.total_sourced, 1)
         last = r.last_run_at or datetime.min.replace(tzinfo=timezone.utc)
-        # higher yield first; among equal yield, least-recently-run first
-        return (-ratio, last)
+        return (-ratio, last)  # highest yield first, then least-recently-run
 
-    candidates.sort(key=lambda cs: yield_score(*cs))
-    return candidates[0]
+    tried.sort(key=yield_score)
+    return untried + tried
+
+
+def select_next_market(db: Session) -> tuple[str, str]:
+    """Pick the single next (city, sector) to work."""
+    ranked = _ranked_markets(db)
+    if not ranked:
+        log.info("all markets exhausted — resetting for a fresh cycle")
+        for row in _coverage_map(db).values():
+            row.exhausted = False
+        db.commit()
+        ranked = _ranked_markets(db)
+    return ranked[0]
+
+
+def select_next_markets(db: Session, count: int = 3,
+                        diversify_by_city: bool = True) -> list[tuple[str, str]]:
+    """
+    Pick `count` markets for one sweep. With diversify_by_city, spreads across
+    DIFFERENT cities so each sweep surfaces leads from multiple areas; falls back
+    to filling from the ranked list if there aren't enough distinct cities.
+    """
+    ranked = _ranked_markets(db)
+    if not ranked:
+        for row in _coverage_map(db).values():
+            row.exhausted = False
+        db.commit()
+        ranked = _ranked_markets(db)
+
+    picks: list[tuple[str, str]] = []
+    used_cities: set[str] = set()
+
+    if diversify_by_city:
+        for city, sector in ranked:
+            if len(picks) >= count:
+                break
+            if city.lower() in used_cities:
+                continue
+            picks.append((city, sector))
+            used_cities.add(city.lower())
+
+    # Fill remaining slots ignoring the diversity constraint
+    for cs in ranked:
+        if len(picks) >= count:
+            break
+        if cs not in picks:
+            picks.append(cs)
+
+    return picks[:count]
 
 
 def record_run(db: Session, city: str, sector: str, sourced: int,
