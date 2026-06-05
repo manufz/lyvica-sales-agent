@@ -6,6 +6,13 @@ class Settings(BaseSettings):
     LYVICA_SCORING_URL: str = "http://localhost:8000"
     RESEND_API_KEY: str = ""
     FROM_EMAIL: str = "Manuel <manuel@yourdomain.com>"
+    # AgentMail (preferred — agent inbox that can send + receive)
+    AGENTMAIL_API_KEY: str = ""
+    AGENTMAIL_BASE_URL: str = "https://api.agentmail.to/v0"
+    AGENTMAIL_INBOX_ID: str = ""        # the sending inbox/address; auto-created if blank
+    AGENTMAIL_USERNAME: str = ""        # optional, for a custom inbox username
+    AGENTMAIL_DOMAIN: str = ""          # optional, for a custom domain
+    AGENTMAIL_DISPLAY_NAME: str = "Manuel"
     STRIPE_SECRET_KEY: str = ""
     STRIPE_STARTER_PRICE_ID: str = ""
     STRIPE_PRO_PRICE_ID: str = ""
