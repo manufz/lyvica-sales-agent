@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     HERMES_SHARED_SECRET: str = "change-this"
     APP_BASE_URL: str = "http://localhost:9000"
     GOOGLE_PLACES_API_KEY: str = ""
+    TELEGRAM_CHAT_ID: str = ""  # group or personal chat ID for pipeline delivery
     # Pipeline defaults — override per request or leave as defaults
     PIPELINE_DEFAULT_CITY: str = "San Francisco"
     PIPELINE_DEFAULT_INDUSTRY: str = "dentist"

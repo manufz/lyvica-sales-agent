@@ -105,8 +105,13 @@ def send_telegram(message: str) -> bool:
     if not os.path.exists(HERMES_BIN):
         print(f"hermes not found at {HERMES_BIN}", file=sys.stderr)
         return False
+
+    # Use TELEGRAM_CHAT_ID from env if set, otherwise fall back to home channel
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID
+    target = f"telegram:{chat_id}" if chat_id else "telegram"
+
     result = subprocess.run(
-        [HERMES_BIN, "send", "-t", "telegram", message],
+        [HERMES_BIN, "send", "-t", target, message],
         capture_output=True, text=True
     )
     if result.returncode != 0:
