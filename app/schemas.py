@@ -30,6 +30,10 @@ class ClassifyReplyRequest(BaseModel):
     body: str
 
 
+class EditRequest(BaseModel):
+    instruction: str
+
+
 class StripeCheckoutRequest(BaseModel):
     lead_id: uuid.UUID
     package: str  # "starter" | "pro"

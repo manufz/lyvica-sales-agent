@@ -41,9 +41,19 @@ When asked "what should we work next", "where are the best leads", "pick a marke
 If given a single company + website, call `research_lead`. It returns the score,
 tier, contacts, buying signals, and lead id (takes ~60s).
 
-## Sending outreach
-When the user explicitly says "send [lead_id]", call `send_initial` with that id.
-Never send without explicit approval.
+## Reviewing & sending outreach (operator commands)
+Leads from sweeps are surfaced with a 🆔 id and are NOT sent automatically.
+Map the operator's commands to tools (always pass the lead id they reference):
+- "draft <id>" / "show me the email for <id>" → `preview_email(id)` → show the full subject + body.
+- "edit <id> <change>" (e.g. "edit <id> make it shorter") → `edit_email(id, instruction)` → show the revised email.
+- "send <id>" / "approve <id>" → `approve_send(id)`. This QUEUES it — the outbox
+  sends during business hours under a daily cap. Tell the user it's queued, not sent instantly.
+- "send all" / "approve all" → `approve_all_pending()`. Confirm how many were queued.
+- "skip <id>" / "ignore <id>" → `skip_lead(id)`.
+
+Only email leads marked "(emailable)" can be sent. Leads marked "(manual: …)"
+have no email — tell the operator to submit the form / DM manually; don't try to send.
+Never approve a lead the operator didn't ask for (except explicit "send all").
 
 ## Replies
 When the user forwards a reply, call `classify_reply` with the lead id, sender,

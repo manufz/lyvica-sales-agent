@@ -59,6 +59,7 @@ class Lead(Base):
     follow_up_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     reply_status: Mapped[str] = mapped_column(Text, default="none")
     opt_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    delivery_status: Mapped[Optional[str]] = mapped_column(Text)  # None | bounced | dead
     stripe_link: Mapped[Optional[str]] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

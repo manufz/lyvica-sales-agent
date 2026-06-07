@@ -114,12 +114,48 @@ def research_lead(company_name: str, website_url: str,
 
 
 @mcp.tool()
-def send_initial(lead_id: str) -> dict:
+def preview_email(lead_id: str) -> dict:
     """
-    Send the drafted initial outreach email for a lead via Resend. Only call
-    after the user has explicitly approved sending to this lead_id.
+    Generate and return the LLM-written first-email DRAFT (subject + body) for a
+    lead so the operator can review it before approving. Use for "draft <id>".
     """
-    return _post(f"/leads/{lead_id}/send-initial")
+    return _post(f"/leads/{lead_id}/draft-initial", timeout=120)
+
+
+@mcp.tool()
+def edit_email(lead_id: str, instruction: str) -> dict:
+    """
+    Revise a lead's draft email per an instruction (e.g. "make it shorter",
+    "mention their reviews"). Returns the revised subject + body. Use for
+    "edit <id> <instruction>".
+    """
+    return _post(f"/leads/{lead_id}/edit", {"instruction": instruction}, timeout=120)
+
+
+@mcp.tool()
+def approve_send(lead_id: str) -> dict:
+    """
+    Approve a lead's outreach and QUEUE it. The outbox sends it during business
+    hours, under the daily cap. Use for "send <id>". (Does not send instantly —
+    it's queued and rate-limited for deliverability.)
+    """
+    return _post(f"/leads/{lead_id}/approve", timeout=120)
+
+
+@mcp.tool()
+def approve_all_pending() -> dict:
+    """
+    Approve ALL reviewed-but-unactioned leads that have a usable email (the
+    "send all" command). The daily cap still throttles how many actually send
+    per day, so the rest queue and drip out over the following days.
+    """
+    return _post("/leads/approve-pending", timeout=180)
+
+
+@mcp.tool()
+def skip_lead(lead_id: str) -> dict:
+    """Dismiss a lead so it won't be contacted. Use for "skip <id>"."""
+    return _post(f"/leads/{lead_id}/skip")
 
 
 @mcp.tool()

@@ -17,8 +17,53 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
 from app.db import SessionLocal
+from app.models import Lead
 from app.notify import send_telegram
 from app.replies import process_inbound
+
+# Senders / subjects that indicate a delivery failure (bounce), not a real reply.
+_BOUNCE_FROM = ("mailer-daemon", "postmaster", "no-reply", "noreply")
+_BOUNCE_SUBJECT = ("delivery status notification", "undeliverable", "undelivered",
+                   "delivery has failed", "returned mail", "mail delivery failed",
+                   "failure notice")
+
+
+def _is_bounce(from_addr: str, subject: str, labels: list) -> bool:
+    f = (from_addr or "").lower()
+    s = (subject or "").lower()
+    if any(b in f for b in _BOUNCE_FROM):
+        return True
+    if any(b in s for b in _BOUNCE_SUBJECT):
+        return True
+    if any("bounce" in (l or "").lower() or "failed" in (l or "").lower() for l in (labels or [])):
+        return True
+    return False
+
+
+def _handle_bounce(db, body: str) -> str | None:
+    """Find the bounced lead (its email appears in the bounce body) and either
+    switch it to an alternate contact channel or mark it dead. Returns a note."""
+    import re
+    emails = set(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", body or ""))
+    our = settings.AGENTMAIL_INBOX_ID.lower()
+    for e in emails:
+        if e.lower() == our:
+            continue
+        lead = db.query(Lead).filter(Lead.email.ilike(e)).first()
+        if not lead:
+            continue
+        if lead.contact_form_url or lead.instagram_url:
+            lead.delivery_status = "bounced"
+            lead.recommended_channel = "contact_form" if lead.contact_form_url else "instagram"
+            lead.outreach_status = "skipped"  # stop email attempts; manual channel
+            db.commit()
+            return f"⚠️ Bounced: {lead.company_name} <{e}> — switched to {lead.recommended_channel} (manual)"
+        else:
+            lead.delivery_status = "dead"
+            lead.outreach_status = "dead"
+            db.commit()
+            return f"⚠️ Bounced: {lead.company_name} <{e}> — no other contact, marked dead"
+    return None
 
 # File of already-processed message ids (dedup across runs; covers replies from
 # senders with no matching lead too, which wouldn't be stored in the DB).
@@ -67,11 +112,13 @@ def main() -> int:
     seen = _load_seen()
     db = SessionLocal()
     new_replies = []
+    bounces = []
     newly_seen = []
 
     for m in messages:
         labels = m.get("labels") or []
         mid = m.get("message_id")
+        subject = m.get("subject")
         from_addr = _email(m.get("from", ""))
 
         # Skip our own outbound, already-processed, and anything from our address
@@ -88,8 +135,16 @@ def main() -> int:
         except Exception:
             pass
 
-        res = process_inbound(db, from_addr, m.get("subject"), body, mid)
-        new_replies.append((from_addr, m.get("subject"), res))
+        # Bounce? Handle delivery failure instead of treating it as a reply.
+        if _is_bounce(from_addr, subject, labels):
+            note = _handle_bounce(db, body)
+            if note:
+                bounces.append(note)
+            newly_seen.append(mid)
+            continue
+
+        res = process_inbound(db, from_addr, subject, body, mid)
+        new_replies.append((from_addr, subject, res))
         newly_seen.append(mid)
 
     db.close()
@@ -103,10 +158,13 @@ def main() -> int:
             lines.append(f"\n📨 {who}\n🏷️ {res['classification']} → {res['action']}\n✉️ {subj or '(no subject)'}")
             if lead:
                 lines.append(f"🆔 {lead.id}")
-        lines.append("\nReply 'send [id]' or act on these in the group.")
+        lines.append("\nAct on these in the group.")
         send_telegram("\n".join(lines))
 
-    print(f"checked {len(messages)} messages, {len(new_replies)} new replies processed")
+    if bounces:
+        send_telegram("📭 Delivery issues:\n" + "\n".join(bounces))
+
+    print(f"checked {len(messages)} messages, {len(new_replies)} replies, {len(bounces)} bounces")
     return 0
 
 

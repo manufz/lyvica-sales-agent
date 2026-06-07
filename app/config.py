@@ -12,8 +12,7 @@ class Settings(BaseSettings):
     AGENTMAIL_INBOX_ID: str = ""        # the sending inbox/address; auto-created if blank
     AGENTMAIL_USERNAME: str = ""        # optional, for a custom inbox username
     AGENTMAIL_DOMAIN: str = ""          # optional, for a custom domain
-    AGENTMAIL_DISPLAY_NAME: str = "Manuel"
-    AGENTMAIL_WEBHOOK_SECRET: str = ""  # Svix signing secret (whsec_...) for inbound webhook
+    AGENTMAIL_DISPLAY_NAME: str = "Lyvica"
     STRIPE_SECRET_KEY: str = ""
     STRIPE_STARTER_PRICE_ID: str = ""
     STRIPE_PRO_PRICE_ID: str = ""
@@ -36,6 +35,24 @@ class Settings(BaseSettings):
     PIPELINE_DEFAULT_INDUSTRY: str = "dentist"
     PIPELINE_DEFAULT_LIMIT: int = 10
     PIPELINE_MIN_SCORE: float = 40.0
+
+    # ── Outreach: LLM email writing ──
+    OUTREACH_MODEL: str = "lyvica-agent/virtual-agent-model"  # TrueFoundry agent group
+
+    # ── Sending controls: daily cap, business-hours window, warm-up ──
+    SEND_DAILY_CAP: int = 10
+    SEND_WINDOW_START: int = 9            # local hour (inclusive)
+    SEND_WINDOW_END: int = 17            # local hour (exclusive)
+    SEND_TIMEZONE: str = "America/Los_Angeles"
+    SEND_WEEKDAYS_ONLY: bool = True       # Mon–Fri only
+    WARMUP_ENABLED: bool = True           # ramp the cap over the first days of sending
+
+    # ── Compliance footer ──
+    COMPLIANCE_NAME: str = "Lyvica"
+    COMPLIANCE_WEBSITE: str = "https://lyvica.com"
+    COMPLIANCE_X: str = "https://x.com/LyvicaHQ"
+    COMPLIANCE_CITY: str = "San Francisco, CA"
+    COMPLIANCE_ADDRESS: str = ""          # street address (add when a mailbox is set up)
 
     class Config:
         env_file = ".env"

@@ -62,16 +62,21 @@ def call_sweep(count: int, limit: int) -> dict:
 
 
 def _lead_block(lead: dict, idx: int) -> list[str]:
-    """One actionable lead entry: name, site, score, contact, signals, issue, draft, id."""
+    """One actionable lead entry: name, site, score, contact, signals, issue, id."""
     score = lead.get("score")
     score_str = str(int(score)) if score is not None else "N/A"
     tier = (lead.get("tier") or "?").upper()
-    contact = (
-        (f"📧 {lead['email']}" if lead.get("email") else None)
-        or (f"📝 {lead['contact_form_url']}" if lead.get("contact_form_url") else None)
-        or (f"📸 {lead['instagram_url']}" if lead.get("instagram_url") else None)
-        or "❓ no contact"
-    )
+
+    # Only email leads are sendable; form/Instagram are manual.
+    if lead.get("email"):
+        contact = f"📧 {lead['email']}  (emailable)"
+    elif lead.get("contact_form_url"):
+        contact = f"📝 {lead['contact_form_url']}  (manual: submit form)"
+    elif lead.get("instagram_url"):
+        contact = f"📸 {lead['instagram_url']}  (manual: DM)"
+    else:
+        contact = "❓ no contact"
+
     block = [
         f"{idx}. {lead.get('company_name') or '—'}",
         f"🌐 {lead.get('website_url') or '—'}",
@@ -82,11 +87,16 @@ def _lead_block(lead: dict, idx: int) -> list[str]:
         block.append(f"🎯 {sig}")
     block += [
         f"⚠️ {lead.get('primary_issue') or 'website improvements needed'}",
-        f"✉️ {lead.get('first_subject') or '—'}",
         f"🆔 {lead['id']}",
         "",
     ]
     return block
+
+
+_CMD_BAR = (
+    "Commands:  draft <id> (preview)  ·  send <id> (queue)  ·  "
+    "edit <id> <change>  ·  skip <id>  ·  send all"
+)
 
 
 def format_summary(data: dict) -> str:
@@ -100,7 +110,7 @@ def format_summary(data: dict) -> str:
     ]
     for i, lead in enumerate(data["leads"], 1):
         lines += _lead_block(lead, i)
-    lines.append("Reply 'send [id]' to approve outreach.")
+    lines.append(_CMD_BAR)
     return "\n".join(lines)
 
 
@@ -129,7 +139,7 @@ def format_sweep(data: dict) -> str:
             n += 1
             lines += _lead_block(lead, n)
 
-    lines.append("Reply 'send [id]' to approve outreach for any lead.")
+    lines.append(_CMD_BAR)
     return "\n".join(lines)
 
 

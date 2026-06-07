@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Security, status
@@ -18,13 +18,14 @@ from app.sourcer import source_leads
 from app.outreach_templates import (
     derive_desired_action,
     derive_primary_issue,
-    render_initial,
 )
+from app.outreach_writer import rewrite, write_initial
 from app.reply_classifier import classify_reply_text
 from app.schemas import (
     ClassifyReplyRequest,
     ClassifyResult,
     DraftOut,
+    EditRequest,
     FollowupSummary,
     IngestLeadRequest,
     LeadOut,
@@ -146,66 +147,87 @@ def research_lead(req: ResearchRequest, db: Session = Depends(get_db)):
 
 @app.post("/leads/{lead_id}/draft-initial", response_model=DraftOut, dependencies=[HermesAuth])
 def draft_initial(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Generate (or regenerate) the LLM-written first-email draft for preview."""
     lead = db.get(Lead, lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
 
-    primary_issue = lead.primary_issue or derive_primary_issue(lead.pitch_angles or [])
-    desired_action = lead.desired_action or derive_desired_action(lead.industry)
-
-    subject, body = render_initial(
-        company_name=lead.company_name,
-        industry=lead.industry or "local",
-        city=lead.city or "your area",
-        primary_issue=primary_issue,
-        desired_action=desired_action,
-    )
-
+    subject, body = write_initial(lead)
     lead.first_subject = subject
     lead.first_body = body
-    lead.primary_issue = primary_issue
-    lead.desired_action = desired_action
+    if lead.outreach_status == "new":
+        lead.outreach_status = "drafted"
     db.commit()
-
     return DraftOut(subject=subject, body=body)
 
 
-# ── Send Initial ──────────────────────────────────────────────────────────────
+@app.post("/leads/{lead_id}/edit", response_model=DraftOut, dependencies=[HermesAuth])
+def edit_draft(lead_id: uuid.UUID, req: EditRequest, db: Session = Depends(get_db)):
+    """Revise the draft per an operator instruction (the `edit` command)."""
+    lead = db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if not lead.first_body:
+        # No draft yet → make one first, then apply the instruction.
+        s, b = write_initial(lead)
+        lead.first_subject, lead.first_body = s, b
+    subject, body = rewrite(lead, req.instruction)
+    lead.first_subject = subject
+    lead.first_body = body
+    db.commit()
+    return DraftOut(subject=subject, body=body)
 
-@app.post("/leads/{lead_id}/send-initial", response_model=SendResult, dependencies=[HermesAuth])
-def send_initial(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+
+# ── Approve / queue for sending (model B: human-gated) ─────────────────────────
+
+@app.post("/leads/{lead_id}/approve", dependencies=[HermesAuth])
+def approve_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Queue a lead's initial email. The outbox sends it within business hours,
+    under the daily cap. Generates the draft now if missing."""
     lead = db.get(Lead, lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
     if not lead.email:
-        raise HTTPException(400, "Lead has no email address")
-    if not lead.first_body or not lead.first_subject:
-        raise HTTPException(400, "Draft not yet generated — call /draft-initial first")
+        raise HTTPException(400, "Lead has no email address — cannot email")
     if lead.opt_out:
         raise HTTPException(400, "Lead has opted out")
+    if lead.delivery_status in ("bounced", "dead"):
+        raise HTTPException(400, f"Lead is {lead.delivery_status} — cannot email")
 
-    result = send_email(lead.email, lead.first_subject, lead.first_body)
-
-    now = datetime.now(timezone.utc)
-    msg = Message(
-        id=uuid.uuid4(),
-        lead_id=lead.id,
-        channel="email",
-        direction="outbound",
-        subject=lead.first_subject,
-        body=lead.first_body,
-        status="sent",
-        provider_payload=result,
-        sent_at=now,
-    )
-    db.add(msg)
-
-    lead.outreach_status = "first_sent"
-    lead.first_sent_at = now
-    lead.follow_up_due_at = now + timedelta(days=3)
+    if not lead.first_subject or not lead.first_body:
+        lead.first_subject, lead.first_body = write_initial(lead)
+    lead.outreach_status = "approved"
     db.commit()
+    return {"status": "queued", "lead_id": str(lead.id),
+            "company": lead.company_name, "email": lead.email}
 
-    return SendResult(status="sent", message_id=msg.id, provider_id=result.get("id") or result.get("message_id"))
+
+@app.post("/leads/approve-pending", dependencies=[HermesAuth])
+def approve_pending(db: Session = Depends(get_db)):
+    """Approve every reviewed-but-unactioned lead with a usable email
+    (the `send all` command). The daily cap still throttles actual sends."""
+    pending = db.query(Lead).filter(
+        Lead.outreach_status.in_(["new", "drafted"]),
+        Lead.email.isnot(None),
+        Lead.opt_out == False,  # noqa: E712
+        (Lead.delivery_status.is_(None)) | (Lead.delivery_status.notin_(["bounced", "dead"])),
+    ).all()
+    for lead in pending:
+        if not lead.first_subject or not lead.first_body:
+            lead.first_subject, lead.first_body = write_initial(lead)
+        lead.outreach_status = "approved"
+    db.commit()
+    return {"approved": len(pending)}
+
+
+@app.post("/leads/{lead_id}/skip", dependencies=[HermesAuth])
+def skip_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    lead.outreach_status = "skipped"
+    db.commit()
+    return {"status": "skipped", "lead_id": str(lead.id)}
 
 
 # ── Raw Email Send ────────────────────────────────────────────────────────────
@@ -442,14 +464,8 @@ def process_market(db: Session, city: str, industry: str,
         lead.desired_action = desired_action
         lead.recommended_channel = channel
         lead.updated_at = datetime.now(timezone.utc)
-
-        subject, body = render_initial(
-            company_name=lead.company_name, industry=industry or "local",
-            city=city or "your area", primary_issue=primary_issue,
-            desired_action=desired_action,
-        )
-        lead.first_subject = subject
-        lead.first_body = body
+        # No draft here — the real email is LLM-written on preview/approve, so we
+        # never accidentally send a stale template. Lead stays outreach_status="new".
 
         db.commit()
         db.refresh(lead)
